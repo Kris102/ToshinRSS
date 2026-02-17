@@ -6,12 +6,13 @@ import feedparser
 import os
 import yaml
 import asyncio
+import re
 
-# ---------- Discord setup ----------
+# ---------------- Discord setup ----------------
 intents = discord.Intents.default()
 client = discord.Client(intents=intents)
 
-# ---------- Environment variables ----------
+# ---------------- Environment variables ----------------
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 DISCORD_CHANNEL_IDS_RAW = os.getenv("DISCORD_CHANNEL_IDS")
 RSS_FEED_URLS_RAW = os.getenv("RSS_FEED_URLS")
@@ -31,7 +32,7 @@ RSS_FEED_URLS = [url.strip() for url in RSS_FEED_URLS_RAW.split(",")]
 EMOJI = "📰"
 SENT_FILE = "sent_articles.yaml"
 
-# ---------- Helper functions ----------
+# ---------------- Helper functions ----------------
 def load_sent_articles():
     if os.path.exists(SENT_FILE):
         with open(SENT_FILE, "r") as f:
@@ -43,6 +44,15 @@ def save_sent_articles(data):
     with open(SENT_FILE, "w") as f:
         yaml.dump(data, f)
 
+def clean_html(html):
+    text = re.sub(r"<br\s*/?>", "\n", html)
+    text = re.sub(r"<.*?>", "", text)
+    return text.strip()
+
+def extract_images(html):
+    return re.findall(r'src="(https?://[^"]+)"', html)
+
+# ---------------- RSS handling ----------------
 async def fetch_feed(channel):
     sent_articles = load_sent_articles()
 
@@ -50,7 +60,12 @@ async def fetch_feed(channel):
         sent_articles[channel.id] = []
 
     for rss_url in RSS_FEED_URLS:
-        feed = feedparser.parse(rss_url)
+        feed = feedparser.parse(
+            rss_url,
+            request_headers={
+                "User-Agent": "Mozilla/5.0 (compatible; DiscordRSSBot/1.0)"
+            }
+        )
 
         if feed.bozo:
             print(f"RSS error: {feed.bozo_exception}")
@@ -66,17 +81,29 @@ async def fetch_feed(channel):
 
         sent_articles[channel.id].append(entry.link)
 
-        message = f"{EMOJI} **{entry.title}**\n{entry.link}"
+        title = entry.title
+        description = entry.description if hasattr(entry, "description") else ""
+        text = clean_html(description)
+        images = extract_images(description)
 
-        try:
-            await channel.send(message)
-            print("Posted:", entry.title)
-        except Exception as e:
-            print("Send failed:", e)
+        # Send main content (clean text)
+        message = f"{EMOJI} **{title}**"
+        if text:
+            message += f"\n{text}"
+
+        await channel.send(message)
+
+        # Send first image separately so Discord embeds it
+        if images:
+            await channel.send(images[0])
+
+        # Optional: send source link cleanly
+
+        print(f"Posted: {title}")
 
     save_sent_articles(sent_articles)
 
-# ---------- Discord events ----------
+# ---------------- Discord events ----------------
 @client.event
 async def on_ready():
     print(f"Logged in as {client.user}")
@@ -86,9 +113,9 @@ async def on_ready():
             channel = client.get_channel(channel_id)
             if channel:
                 await fetch_feed(channel)
-        await asyncio.sleep(600)  # 10 minutes
+        await asyncio.sleep(600)  # 10  minutes
 
-# ---------- Start bot ----------
+# ---------------- Start bot ----------------
 print("Starting bot...")
 client.run(DISCORD_BOT_TOKEN)
 
